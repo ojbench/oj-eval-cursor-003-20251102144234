@@ -150,7 +150,8 @@ struct Contest {
     struct RankKey {
         int solved = 0;
         long long penalty = 0;
-        vector<int> solveTimesDesc; // sorted descending
+        int solveTimesCount = 0;
+        int solveTimesDesc[26] = {0}; // sorted descending, length = solveTimesCount
     };
 
     RankKey buildRankKeyForTeamVisible(int ti) const {
@@ -158,8 +159,9 @@ struct Contest {
         RankKey key;
         key.solved = 0;
         key.penalty = 0;
-        key.solveTimesDesc.clear();
-        key.solveTimesDesc.reserve(problemCount);
+        key.solveTimesCount = 0;
+        int buf[26];
+        int cnt = 0;
         for (int p = 0; p < problemCount; ++p) {
             const ProblemState &ps = t.problems[p];
             bool frozenThis = isFrozen && ps.wasUnsolvedAtFreeze && ps.hasPostFreezeActivity && !ps.unfrozenInScroll;
@@ -169,10 +171,13 @@ struct Contest {
             if (ps.solved) {
                 key.solved += 1;
                 key.penalty += 20LL * ps.wrongBeforeFirstAccepted + ps.firstAcceptedTime;
-                key.solveTimesDesc.push_back(ps.firstAcceptedTime);
+                buf[cnt++] = ps.firstAcceptedTime;
             }
         }
-        sort(key.solveTimesDesc.begin(), key.solveTimesDesc.end(), greater<int>());
+        // sort descending
+        sort(buf, buf + cnt, greater<int>());
+        key.solveTimesCount = cnt;
+        for (int i = 0; i < cnt; ++i) key.solveTimesDesc[i] = buf[i];
         return key;
     }
 
@@ -183,8 +188,8 @@ struct Contest {
         if (ka.solved != kb.solved) return ka.solved > kb.solved;
         if (ka.penalty != kb.penalty) return ka.penalty < kb.penalty;
         // compare solve time vectors: smaller values are better at earlier positions, but vectors are desc sorted
-        size_t n = ka.solveTimesDesc.size(); // equals kb's size
-        for (size_t i = 0; i < n; ++i) {
+        int n = ka.solveTimesCount; // equals kb's size
+        for (int i = 0; i < n; ++i) {
             if (ka.solveTimesDesc[i] != kb.solveTimesDesc[i]) {
                 return ka.solveTimesDesc[i] < kb.solveTimesDesc[i];
             }
@@ -312,8 +317,8 @@ struct Contest {
                 const RankKey &kb = (*keys)[b];
                 if (ka.solved != kb.solved) return ka.solved > kb.solved;
                 if (ka.penalty != kb.penalty) return ka.penalty < kb.penalty;
-                size_t n = ka.solveTimesDesc.size();
-                for (size_t i = 0; i < n; ++i) {
+                int n = ka.solveTimesCount;
+                for (int i = 0; i < n; ++i) {
                     if (ka.solveTimesDesc[i] != kb.solveTimesDesc[i]) {
                         return ka.solveTimesDesc[i] < kb.solveTimesDesc[i];
                     }
@@ -348,6 +353,24 @@ struct Contest {
         while (!frozenSet.empty()) {
             int ti = *prev(frozenSet.end()); // lowest-ranked among frozen teams
 
+            // Unfreeze smallest frozen problem for this team
+            int pi = smallestFrozenProblemIndex(ti);
+            if (pi < 0) break; // safety
+            teams[ti].problems[pi].unfrozenInScroll = true;
+
+            // Check whether this unfreeze affects ranking (only if problem got solved)
+            bool affectsRanking = teams[ti].problems[pi].solved;
+
+            // Update frozenSet membership for this team
+            auto itFrozen = frozenSet.find(ti);
+            if (itFrozen != frozenSet.end()) frozenSet.erase(itFrozen);
+            if (teamHasFrozen(ti)) frozenSet.insert(ti);
+
+            if (!affectsRanking) {
+                // No ranking change possible; continue
+                continue;
+            }
+
             // Save old predecessor (team just above ti)
             auto itOld = orderSet.find(ti);
             int oldAbove = -1;
@@ -356,20 +379,9 @@ struct Contest {
                 oldAbove = *itPrev;
             }
 
-            // Prepare to update: erase from sets before changing keys/state
+            // Update cached key for this team and reinsert in order set
             orderSet.erase(itOld);
-            auto itFrozen = frozenSet.find(ti);
-            if (itFrozen != frozenSet.end()) frozenSet.erase(itFrozen);
-
-            // Unfreeze smallest frozen problem for this team
-            int pi = smallestFrozenProblemIndex(ti);
-            if (pi < 0) break; // safety
-            teams[ti].problems[pi].unfrozenInScroll = true;
-
-            // Update cached key for this team
             cachedKeys[ti] = buildRankKeyForTeamVisible(ti);
-
-            // Reinsert and get new iterator
             orderSet.insert(ti);
             auto itNew = orderSet.find(ti);
 
@@ -379,16 +391,11 @@ struct Contest {
             if (itNew != orderSet.begin()) {
                 int newPred = *prev(itNew);
                 if (oldAbove >= 0) {
-                    // improved if newPred ranks ahead of oldAbove (or oldAbove disappeared above)
                     if (better(newPred, oldAbove)) improved = true;
-                } else {
-                    // previously at top (no above). cannot move up; improved=false
                 }
-                // team replaced is the one immediately below the new position
                 auto itBelow = next(itNew);
                 if (itBelow != orderSet.end()) replacedId = *itBelow;
             } else {
-                // now at very top -> improved if previously had someone above
                 if (oldAbove >= 0) improved = true;
                 auto itBelow = next(itNew);
                 if (itBelow != orderSet.end()) replacedId = *itBelow;
@@ -398,9 +405,6 @@ struct Contest {
                 const RankKey &rk = cachedKeys[ti];
                 cout << teams[ti].name << ' ' << teams[replacedId].name << ' ' << rk.solved << ' ' << rk.penalty << "\n";
             }
-
-            // If still has frozen problems, reinsert into frozenSet
-            if (teamHasFrozen(ti)) frozenSet.insert(ti);
         }
 
         // After scrolling ends, print the final scoreboard
