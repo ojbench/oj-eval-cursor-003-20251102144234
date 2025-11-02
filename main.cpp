@@ -131,7 +131,7 @@ struct Contest {
         }
 
         // Update core problem status
-        JudgeStatus st;
+        JudgeStatus st = JudgeStatus::Wrong_Answer; // default to silence warnings; inputs are valid
         bool ok = toJudgeStatus(statusStr, st);
         (void)ok; // input guaranteed valid
         if (!ps.solved) {
@@ -296,46 +296,123 @@ struct Contest {
     void doScroll() {
         // Precondition: isFrozen == true checked by caller
         cout << "[Info]Scroll scoreboard.\n";
-        // Scroll requires a flush first (without printing flush info)
-        vector<int> order = computeCurrentOrder();
+
+        // Build cached rank keys for all teams under current frozen visibility
+        vector<RankKey> cachedKeys(teams.size());
+        for (size_t i = 0; i < teams.size(); ++i) {
+            cachedKeys[i] = buildRankKeyForTeamVisible((int)i);
+        }
+
+        struct Cmp {
+            const vector<RankKey> *keys;
+            const vector<Team> *teams;
+            bool operator()(int a, int b) const {
+                if (a == b) return false;
+                const RankKey &ka = (*keys)[a];
+                const RankKey &kb = (*keys)[b];
+                if (ka.solved != kb.solved) return ka.solved > kb.solved;
+                if (ka.penalty != kb.penalty) return ka.penalty < kb.penalty;
+                size_t n = ka.solveTimesDesc.size();
+                for (size_t i = 0; i < n; ++i) {
+                    if (ka.solveTimesDesc[i] != kb.solveTimesDesc[i]) {
+                        return ka.solveTimesDesc[i] < kb.solveTimesDesc[i];
+                    }
+                }
+                if ((*teams)[a].name != (*teams)[b].name) return (*teams)[a].name < (*teams)[b].name;
+                return a < b;
+            }
+        } cmp{&cachedKeys, &teams};
+
+        // Build full order set and frozen subset set
+        std::set<int, Cmp> orderSet(cmp);
+        for (int i = 0; i < (int)teams.size(); ++i) orderSet.insert(i);
+
+        auto buildOrderVector = [&](const std::set<int, Cmp> &s){
+            vector<int> v; v.reserve(s.size());
+            for (int id : s) v.push_back(id);
+            return v;
+        };
+
         // Print scoreboard before scrolling
-        printScoreboard(order);
+        {
+            auto order = buildOrderVector(orderSet);
+            printScoreboard(order);
+        }
+
+        std::set<int, Cmp> frozenSet(cmp);
+        for (int i = 0; i < (int)teams.size(); ++i) if (teamHasFrozen(i)) frozenSet.insert(i);
+
+        auto better = [&](int a, int b){ return cmp(a,b); };
 
         // Loop until no team has frozen problems
-        while (true) {
-            int pos = findLowestWithFrozen(order);
-            if (pos < 0) break;
-            int ti = order[pos];
-            int pi = smallestFrozenProblemIndex(ti);
-            if (pi < 0) break; // safety
+        while (!frozenSet.empty()) {
+            int ti = *prev(frozenSet.end()); // lowest-ranked among frozen teams
 
-            // Unfreeze this problem
-            teams[ti].problems[pi].unfrozenInScroll = true;
-
-            // Recompute order after this unfreeze
-            vector<int> newOrder = computeCurrentOrder();
-
-            // If ranking of this team improved, output ranking change
-            int oldIdx = -1, newIdx = -1;
-            for (int i = 0; i < (int)order.size(); ++i) if (order[i] == ti) { oldIdx = i; break; }
-            for (int i = 0; i < (int)newOrder.size(); ++i) if (newOrder[i] == ti) { newIdx = i; break; }
-            if (oldIdx >= 0 && newIdx >= 0 && newIdx < oldIdx) {
-                // Find the team that was previously at newIdx in the old order
-                string replacedTeamName = teams[ order[newIdx] ].name;
-                RankKey rk = buildRankKeyForTeamVisible(ti);
-                cout << teams[ti].name << ' ' << replacedTeamName << ' ' << rk.solved << ' ' << rk.penalty << "\n";
+            // Save old predecessor (team just above ti)
+            auto itOld = orderSet.find(ti);
+            int oldAbove = -1;
+            if (itOld != orderSet.begin()) {
+                auto itPrev = prev(itOld);
+                oldAbove = *itPrev;
             }
 
-            order.swap(newOrder);
+            // Prepare to update: erase from sets before changing keys/state
+            orderSet.erase(itOld);
+            auto itFrozen = frozenSet.find(ti);
+            if (itFrozen != frozenSet.end()) frozenSet.erase(itFrozen);
+
+            // Unfreeze smallest frozen problem for this team
+            int pi = smallestFrozenProblemIndex(ti);
+            if (pi < 0) break; // safety
+            teams[ti].problems[pi].unfrozenInScroll = true;
+
+            // Update cached key for this team
+            cachedKeys[ti] = buildRankKeyForTeamVisible(ti);
+
+            // Reinsert and get new iterator
+            orderSet.insert(ti);
+            auto itNew = orderSet.find(ti);
+
+            // Determine if ranking improved
+            bool improved = false;
+            int replacedId = -1;
+            if (itNew != orderSet.begin()) {
+                int newPred = *prev(itNew);
+                if (oldAbove >= 0) {
+                    // improved if newPred ranks ahead of oldAbove (or oldAbove disappeared above)
+                    if (better(newPred, oldAbove)) improved = true;
+                } else {
+                    // previously at top (no above). cannot move up; improved=false
+                }
+                // team replaced is the one immediately below the new position
+                auto itBelow = next(itNew);
+                if (itBelow != orderSet.end()) replacedId = *itBelow;
+            } else {
+                // now at very top -> improved if previously had someone above
+                if (oldAbove >= 0) improved = true;
+                auto itBelow = next(itNew);
+                if (itBelow != orderSet.end()) replacedId = *itBelow;
+            }
+
+            if (improved && replacedId >= 0) {
+                const RankKey &rk = cachedKeys[ti];
+                cout << teams[ti].name << ' ' << teams[replacedId].name << ' ' << rk.solved << ' ' << rk.penalty << "\n";
+            }
+
+            // If still has frozen problems, reinsert into frozenSet
+            if (teamHasFrozen(ti)) frozenSet.insert(ti);
         }
 
         // After scrolling ends, print the final scoreboard
-        printScoreboard(order);
+        {
+            auto order = buildOrderVector(orderSet);
+            printScoreboard(order);
+        }
 
         // Lift frozen state
         isFrozen = false;
         clearFreezeFlags();
-        // After scroll, the latest state is effectively flushed; we can update lastFlushedOrder
+        // After scroll, the latest state is effectively flushed; update lastFlushedOrder
         lastFlushedOrder = computeCurrentOrder();
     }
 };
