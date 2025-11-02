@@ -353,24 +353,6 @@ struct Contest {
         while (!frozenSet.empty()) {
             int ti = *prev(frozenSet.end()); // lowest-ranked among frozen teams
 
-            // Unfreeze smallest frozen problem for this team
-            int pi = smallestFrozenProblemIndex(ti);
-            if (pi < 0) break; // safety
-            teams[ti].problems[pi].unfrozenInScroll = true;
-
-            // Check whether this unfreeze affects ranking (only if problem got solved)
-            bool affectsRanking = teams[ti].problems[pi].solved;
-
-            // Update frozenSet membership for this team
-            auto itFrozen = frozenSet.find(ti);
-            if (itFrozen != frozenSet.end()) frozenSet.erase(itFrozen);
-            if (teamHasFrozen(ti)) frozenSet.insert(ti);
-
-            if (!affectsRanking) {
-                // No ranking change possible; continue
-                continue;
-            }
-
             // Save old predecessor (team just above ti)
             auto itOld = orderSet.find(ti);
             int oldAbove = -1;
@@ -378,6 +360,15 @@ struct Contest {
                 auto itPrev = prev(itOld);
                 oldAbove = *itPrev;
             }
+
+            // Update frozenSet membership for this team (will be updated after unfreeze)
+            auto itFrozen = frozenSet.find(ti);
+            if (itFrozen != frozenSet.end()) frozenSet.erase(itFrozen);
+
+            // Unfreeze smallest frozen problem for this team
+            int pi = smallestFrozenProblemIndex(ti);
+            if (pi < 0) break; // safety
+            teams[ti].problems[pi].unfrozenInScroll = true;
 
             // Update cached key for this team and reinsert in order set
             orderSet.erase(itOld);
@@ -405,6 +396,9 @@ struct Contest {
                 const RankKey &rk = cachedKeys[ti];
                 cout << teams[ti].name << ' ' << teams[replacedId].name << ' ' << rk.solved << ' ' << rk.penalty << "\n";
             }
+
+            // If still has frozen problems, reinsert into frozenSet
+            if (teamHasFrozen(ti)) frozenSet.insert(ti);
         }
 
         // After scrolling ends, print the final scoreboard
